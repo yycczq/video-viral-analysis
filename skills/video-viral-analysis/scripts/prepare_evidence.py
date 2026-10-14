@@ -17,7 +17,7 @@ except ImportError:
 
 
 def run(command, timeout=180):
-    result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+    result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
     if result.returncode:
         raise ValueError(f"{Path(command[0]).name} failed: {result.stderr[-1600:]}")
     return result
@@ -32,11 +32,11 @@ def tool(name, supplied):
         raise ValueError(f"Not an executable: {path}")
     found = shutil.which(name)
     if found:
-        return found
+        return str(Path(found).resolve())
     for parent in Path(__file__).resolve().parents:
         path = parent / ".tools/video-analysis" / name / name
         if path.is_file() and os.access(path, os.X_OK):
-            return str(path)
+            return str(path.resolve())
     raise ValueError(f"{name} missing; pass --{name} with an existing executable")
 
 
@@ -116,6 +116,12 @@ def times(stderr):
     return [float(x) for x in re.findall(r"\[Parsed_showinfo[^\]]*\]\s+n:\s*\d+.*?pts_time:([\d.eE+\-]+)", stderr)]
 
 
+def frame_sync_options(ffmpeg):
+    # New releases removed -vsync; old releases do not recognize -fps_mode.
+    help_text = run([ffmpeg, "-hide_banner", "-h", "full"], 45).stdout
+    return ["-fps_mode", "passthrough"] if "-fps_mode" in help_text else ["-vsync", "0"]
+
+
 def prepare(args):
     source = Path(args.video).expanduser().resolve(strict=True)
     if not source.is_file():
@@ -140,24 +146,25 @@ def prepare(args):
     if math.ceil((end - start) / interval) + (6 if dense_opening else 0) > 180:
         raise ValueError("Over 180 samples requested; shorten range or increase --every")
     transcript = load_transcript(args.transcript, duration)
-    context = json.loads(Path(args.context).expanduser().read_text()) if args.context else {}
+    context = json.loads(Path(args.context).expanduser().read_text(encoding="utf-8-sig")) if args.context else {}
     if not isinstance(context, dict):
         raise ValueError("Context must be a JSON object")
     original_hash = sha256(source)
+    sync_options = frame_sync_options(ffmpeg)
     out.mkdir(parents=True)
     try:
         (out / "frames").mkdir()
         step = f"if(lt(t,3),0.5,{interval})" if dense_opening else str(interval)
         select = f"gte(t,{start})*lt(t,{end})*(isnan(prev_selected_t)+gte(t-prev_selected_t,{step}))"
         common = [ffmpeg, "-hide_banner", "-loglevel", "info", "-nostdin", "-i", str(source), "-map", f"0:{video['index']}", "-an"]
-        result = run(common + ["-vf", f"setpts=PTS-STARTPTS,select='{select}',scale=640:-2,showinfo", "-vsync", "0", "-frames:v", "180", "-pix_fmt", "yuvj420p", "-q:v", "3", str(out / "frames/frame-%04d.jpg")], max(180, duration * 2))
+        result = run(common + ["-vf", f"setpts=PTS-STARTPTS,select='{select}',scale=640:-2,showinfo", *sync_options, "-frames:v", "180", "-pix_fmt", "yuvj420p", "-q:v", "3", str(out / "frames/frame-%04d.jpg")], max(180, duration * 2))
         sampled = times(result.stderr)
         paths = sorted((out / "frames").glob("*.jpg"))
         if not paths or len(paths) != len(sampled):
             raise ValueError("Decoded frame count and timestamp count differ")
         frames = [{"seconds": t, "path": str(p.relative_to(out))} for t, p in zip(sampled, paths)]
         contacts = sheets(frames, out)
-        scene = run(common + ["-vf", f"setpts=PTS-STARTPTS,scale=160:-2,select='gte(t,{start})*lt(t,{end})*gt(scene,0.35)',showinfo", "-vsync", "0", "-f", "null", "-"], max(180, duration * 2))
+        scene = run(common + ["-vf", f"setpts=PTS-STARTPTS,scale=160:-2,select='gte(t,{start})*lt(t,{end})*gt(scene,0.35)',showinfo", *sync_options, "-f", "null", "-"], max(180, duration * 2))
         audio_streams = [s for s in probe.get("streams", []) if s.get("codec_type") == "audio"]
         audio = {"present": bool(audio_streams), "interpreted": False}
         if audio_streams:
@@ -183,7 +190,7 @@ def prepare(args):
             notes.append("没有转录。不得推测台词、语气、音乐或音效。")
         notes += ["", "## 分析状态", "仅完成证据准备；Codex 查看内容后再写 ANALYSIS.md。"]
         (out / "EVIDENCE.md").write_text("\n".join(notes) + "\n", encoding="utf-8")
-        print(json.dumps({"output": str(out), "frames": len(frames), "contact_sheets": contacts, "status": "evidence_ready_report_pending"}, ensure_ascii=False))
+        print(json.dumps({"output": str(out), "frames": len(frames), "contact_sheets": contacts, "status": "evidence_ready_report_pending"}))
     except BaseException:
         # This directory was created by this invocation; existing outputs are rejected above.
         shutil.rmtree(out, ignore_errors=True)

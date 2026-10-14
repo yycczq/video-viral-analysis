@@ -63,7 +63,7 @@ class MediaTests(unittest.TestCase):
             raise unittest.SkipTest(str(error))
         cls.temporary = tempfile.TemporaryDirectory()
         cls.root = Path(cls.temporary.name)
-        cls.fixture = cls.root / "fixture.mp4"
+        cls.fixture = cls.root / "测试 video.mp4"
         command = [cls.ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-f", "lavfi", "-i", "color=c=red:s=180x320:d=2:r=12",
                    "-f", "lavfi", "-i", "color=c=blue:s=180x320:d=2:r=12", "-f", "lavfi", "-i", "color=c=green:s=180x320:d=2:r=12",
                    "-f", "lavfi", "-i", "sine=frequency=440:duration=6", "-filter_complex", "[0:v][1:v][2:v]concat=n=3:v=1:a=0[v]",
@@ -105,12 +105,12 @@ class MediaTests(unittest.TestCase):
         captions = self.root / "captions.srt"
         captions.write_text("1\n00:00:01,750 --> 00:00:02,250\nTest\n", encoding="utf-8")
         context = self.root / "context.json"
-        context.write_text(json.dumps({"views": 123, "completion_rate": None}), encoding="utf-8")
+        context.write_text(json.dumps({"views": 123, "completion_rate": None, "audience": "中文用户"}, ensure_ascii=False), encoding="utf-8")
         out = self.prepare("dense", "--start", "1.75", "--end", "2.5", "--every", ".25", "--transcript", str(captions), "--context", str(context))
         original = (out / "evidence.json").read_bytes()
         evidence = json.loads(original)
         self.assertEqual([f["seconds"] for f in evidence["frames"]], [1.75, 2, 2.25])
-        self.assertEqual(evidence["context"]["data"], {"views": 123, "completion_rate": None})
+        self.assertEqual(evidence["context"]["data"], {"views": 123, "completion_rate": None, "audience": "中文用户"})
         self.assertEqual(evidence["audio"]["source_start_seconds"], 1.75)
         self.prepare("dense", success=False)
         self.assertEqual((out / "evidence.json").read_bytes(), original)
@@ -136,6 +136,10 @@ class MediaTests(unittest.TestCase):
                 os.environ.pop(variable, None)
             else:
                 os.environ[variable] = previous
+
+    def test_output_path_with_unicode_and_spaces(self):
+        out = self.prepare("中文 result", "--start", "0", "--end", "1", "--every", ".5")
+        self.assertEqual(len(json.loads((out / "evidence.json").read_text(encoding="utf-8"))["frames"]), 2)
 
 
 if __name__ == "__main__":
