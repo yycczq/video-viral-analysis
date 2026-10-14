@@ -1,0 +1,4 @@
+interface:
+  display_name: "爆款视频分析"
+  short_description: "拆解视频的开头、悬念、节奏和传播动机，用时间点说明可能走红的原因"
+  default_prompt: "用 $video-viral-analysis 分析这个视频为什么可能会火，给出具体时间点与证据。"
